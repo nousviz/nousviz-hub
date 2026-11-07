@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Instance windows load the server's own web UI. Tailnet and LAN
+       instances are commonly plain http (e.g. http://100.x.y.z), which
+       ATS would otherwise block in web views. Native (Rust) requests
+       keep full ATS; this relaxes web content only. -->
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsArbitraryLoadsInWebContent</key>
+    <true/>
+  </dict>
+</dict>
+</plist>
