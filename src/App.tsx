@@ -130,13 +130,13 @@ function App() {
       {addOpen && (
         <form className="card add-form" onSubmit={handleAdd}>
           <input
-            placeholder="Name (e.g. CS StatsDrone)"
+            placeholder="Name (e.g. Production)"
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
             autoFocus
           />
           <input
-            placeholder="URL (e.g. https://cs.statsdroneinc.com)"
+            placeholder="URL (e.g. https://nousviz.example.com)"
             value={newUrl}
             onChange={(e) => setNewUrl(e.target.value)}
           />
