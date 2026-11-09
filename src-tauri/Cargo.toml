@@ -1,6 +1,6 @@
 [package]
 name = "nousviz-hub"
-version = "0.1.0"
+version = "0.1.1"
 description = "NousViz Hub — desktop client for NousViz instances"
 authors = ["StatsDrone"]
 edition = "2024"
