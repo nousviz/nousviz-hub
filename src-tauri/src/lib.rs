@@ -28,6 +28,10 @@ struct Config {
 struct AppState {
     config: Mutex<Config>,
     config_path: PathBuf,
+    // Mobile has a single webview: tokens queued here per origin are
+    // seeded into localStorage by on_page_load after "Open" navigates.
+    #[cfg(mobile)]
+    pending_tokens: Mutex<std::collections::HashMap<String, String>>,
 }
 
 #[derive(Serialize)]
@@ -40,10 +44,20 @@ struct InstanceView {
     token_in_fallback: bool,
 }
 
-fn view(inst: &Instance) -> InstanceView {
-    let in_keyring = keyring::Entry::new(KEYRING_SERVICE, &inst.id)
+#[cfg(not(target_os = "android"))]
+fn keyring_get(id: &str) -> Option<String> {
+    keyring::Entry::new(KEYRING_SERVICE, id)
         .and_then(|e| e.get_password())
-        .is_ok();
+        .ok()
+}
+
+#[cfg(target_os = "android")]
+fn keyring_get(_id: &str) -> Option<String> {
+    None
+}
+
+fn view(inst: &Instance) -> InstanceView {
+    let in_keyring = keyring_get(&inst.id).is_some();
     InstanceView {
         id: inst.id.clone(),
         name: inst.name.clone(),
@@ -80,20 +94,23 @@ fn normalize_url(url: &str) -> Result<String, String> {
 }
 
 fn store_token(inst: &mut Instance, token: &str) {
+    #[cfg(not(target_os = "android"))]
     match keyring::Entry::new(KEYRING_SERVICE, &inst.id).and_then(|e| e.set_password(token)) {
         Ok(()) => inst.token_fallback = None,
         Err(_) => inst.token_fallback = Some(token.to_string()),
     }
+    #[cfg(target_os = "android")]
+    {
+        inst.token_fallback = Some(token.to_string());
+    }
 }
 
 fn get_token(inst: &Instance) -> Option<String> {
-    keyring::Entry::new(KEYRING_SERVICE, &inst.id)
-        .and_then(|e| e.get_password())
-        .ok()
-        .or_else(|| inst.token_fallback.clone())
+    keyring_get(&inst.id).or_else(|| inst.token_fallback.clone())
 }
 
 fn delete_token(inst: &mut Instance) {
+    #[cfg(not(target_os = "android"))]
     if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, &inst.id) {
         let _ = entry.delete_credential();
     }
@@ -227,6 +244,7 @@ async fn check_health(url: String) -> Result<serde_json::Value, String> {
     res.json().await.map_err(|e| e.to_string())
 }
 
+#[cfg(desktop)]
 #[tauri::command]
 fn open_instance(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
     let (name, url, token) = {
@@ -265,6 +283,43 @@ fn open_instance(app: AppHandle, state: State<'_, AppState>, id: String) -> Resu
     Ok(())
 }
 
+#[cfg(mobile)]
+#[tauri::command]
+fn open_instance(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let (url, token) = {
+        let config = state.config.lock().unwrap();
+        let inst = config
+            .instances
+            .iter()
+            .find(|i| i.id == id)
+            .ok_or("Instance not found")?;
+        (inst.url.clone(), get_token(inst))
+    };
+    let parsed = tauri::Url::parse(&url).map_err(|e| e.to_string())?;
+    if let Some(token) = token {
+        state
+            .pending_tokens
+            .lock()
+            .unwrap()
+            .insert(parsed.origin().ascii_serialization(), token);
+    }
+    let window = app.get_webview_window("main").ok_or("No main window")?;
+    window.navigate(parsed).map_err(|e| e.to_string())
+}
+
+// Floating return-to-Hub control injected into instance pages on mobile,
+// where there is no second window to go back to.
+#[cfg(mobile)]
+const HUB_BUTTON_JS: &str = r#"(function(){
+  if (document.getElementById('nvhub-back')) return;
+  var b = document.createElement('button');
+  b.id = 'nvhub-back';
+  b.textContent = '⌂ Hub';
+  b.style.cssText = 'position:fixed;bottom:18px;left:14px;z-index:2147483647;padding:9px 16px;border-radius:999px;border:1px solid #3f9fff;background:rgba(10,10,15,.88);color:#fff;font:14px -apple-system,system-ui,sans-serif;';
+  b.onclick = function(){ location.href = 'http://tauri.localhost/'; };
+  document.body.appendChild(b);
+})();"#;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -278,8 +333,33 @@ pub fn run() {
             app.manage(AppState {
                 config: Mutex::new(load_config(&config_path)),
                 config_path,
+                #[cfg(mobile)]
+                pending_tokens: Mutex::new(std::collections::HashMap::new()),
             });
             Ok(())
+        })
+        .on_page_load(|_webview, _payload| {
+            #[cfg(mobile)]
+            if _payload.event() == tauri::webview::PageLoadEvent::Finished {
+                let origin = _payload.url().origin().ascii_serialization();
+                // The Hub UI itself needs no injection.
+                if origin.contains("tauri.localhost") || origin.starts_with("tauri:") {
+                    return;
+                }
+                let state = _webview.app_handle().state::<AppState>();
+                let token = state.pending_tokens.lock().unwrap().get(&origin).cloned();
+                let mut script = String::new();
+                if let Some(token) = token {
+                    let key = serde_json::to_string(TOKEN_LOCALSTORAGE_KEY).unwrap();
+                    let tok = serde_json::to_string(&token).unwrap();
+                    // Reload once after seeding so the SPA boots authenticated.
+                    script.push_str(&format!(
+                        "try {{ if (localStorage.getItem({key}) !== {tok}) {{ localStorage.setItem({key}, {tok}); location.reload(); }} }} catch (e) {{}}\n"
+                    ));
+                }
+                script.push_str(HUB_BUTTON_JS);
+                let _ = _webview.eval(&script);
+            }
         })
         .invoke_handler(tauri::generate_handler![
             list_instances,
