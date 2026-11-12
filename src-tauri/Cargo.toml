@@ -22,7 +22,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 uuid = { version = "1", features = ["v4"] }
 
@@ -34,3 +34,9 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+# Local-instance support (desktop only; NousViz core supports macOS/Linux).
+# postgresql_embedded downloads portable Postgres binaries at setup time.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+postgresql_embedded = { version = "0.22", default-features = false, features = ["blocking", "theseus", "tls-rustls-ring"] }
+tiny_http = "0.12"

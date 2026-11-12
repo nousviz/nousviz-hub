@@ -1,3 +1,6 @@
+#[cfg(desktop)]
+mod local;
+
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -8,26 +11,26 @@ const KEYRING_SERVICE: &str = "com.nousviz.hub";
 const TOKEN_LOCALSTORAGE_KEY: &str = "nousviz_auth_token";
 
 #[derive(Serialize, Deserialize, Clone, Default)]
-struct Instance {
-    id: String,
-    name: String,
-    url: String,
+pub(crate) struct Instance {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    email: Option<String>,
+    pub(crate) email: Option<String>,
     // Only used when the OS keychain is unavailable (e.g. Linux without a
     // secret service). Plaintext in instances.json — the UI flags it.
     #[serde(skip_serializing_if = "Option::is_none")]
-    token_fallback: Option<String>,
+    pub(crate) token_fallback: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Default)]
-struct Config {
-    instances: Vec<Instance>,
+pub(crate) struct Config {
+    pub(crate) instances: Vec<Instance>,
 }
 
-struct AppState {
-    config: Mutex<Config>,
-    config_path: PathBuf,
+pub(crate) struct AppState {
+    pub(crate) config: Mutex<Config>,
+    pub(crate) config_path: PathBuf,
 }
 
 #[derive(Serialize)]
@@ -61,7 +64,7 @@ fn load_config(path: &PathBuf) -> Config {
         .unwrap_or_default()
 }
 
-fn save_config(state: &AppState) -> Result<(), String> {
+pub(crate) fn save_config(state: &AppState) -> Result<(), String> {
     let config = state.config.lock().unwrap();
     let json = serde_json::to_string_pretty(&*config).map_err(|e| e.to_string())?;
     if let Some(dir) = state.config_path.parent() {
@@ -267,7 +270,7 @@ fn open_instance(app: AppHandle, state: State<'_, AppState>, id: String) -> Resu
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let config_path = app
@@ -279,17 +282,45 @@ pub fn run() {
                 config: Mutex::new(load_config(&config_path)),
                 config_path,
             });
+            #[cfg(desktop)]
+            local::init(app);
             Ok(())
-        })
-        .invoke_handler(tauri::generate_handler![
-            list_instances,
-            add_instance,
-            remove_instance,
-            login_instance,
-            logout_instance,
-            check_health,
-            open_instance,
-        ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        });
+
+    #[cfg(desktop)]
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        list_instances,
+        add_instance,
+        remove_instance,
+        login_instance,
+        logout_instance,
+        check_health,
+        open_instance,
+        local::local_status,
+        local::local_setup,
+        local::local_start,
+        local::local_stop,
+    ]);
+    #[cfg(not(desktop))]
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        list_instances,
+        add_instance,
+        remove_instance,
+        login_instance,
+        logout_instance,
+        check_health,
+        open_instance,
+    ]);
+
+    builder
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|_app, _event| {
+            // Stop the local NousViz stack (API, workers, embedded Postgres)
+            // when the Hub quits.
+            #[cfg(desktop)]
+            if let tauri::RunEvent::Exit = _event {
+                local::shutdown(_app);
+            }
+        });
 }

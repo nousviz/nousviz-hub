@@ -210,3 +210,77 @@ input:focus {
   text-align: center;
   padding: 60px 0;
 }
+
+/* ── Local instance panel ──────────────────────────────────────────── */
+
+.local-panel {
+  margin-bottom: 16px;
+}
+
+.local-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.local-head p {
+  margin: 4px 0 0;
+  font-size: 13px;
+}
+
+.local-wizard strong {
+  display: block;
+  margin-bottom: 10px;
+}
+
+.steps {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.step {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.step-mark {
+  width: 16px;
+  text-align: center;
+}
+
+.step.pending {
+  color: var(--muted);
+}
+
+.step.ok .step-mark {
+  color: var(--ok);
+}
+
+.step.error {
+  color: var(--bad);
+}
+
+.step-detail {
+  font-size: 12px;
+}
+
+.setup-log {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  margin: 0 0 10px;
+  max-height: 180px;
+  overflow: auto;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+}

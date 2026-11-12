@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import "./App.css";
 
 interface InstanceView {
@@ -15,6 +16,173 @@ interface Health {
   state: "checking" | "healthy" | "degraded" | "unreachable";
   version?: string;
   detail?: string;
+}
+
+interface LocalStatus {
+  supported: boolean;
+  installed: boolean;
+  running: boolean;
+  setup_running: boolean;
+  version: string | null;
+  url: string | null;
+}
+
+type StepStatus = "pending" | "running" | "ok" | "error";
+
+const SETUP_STEPS: { id: string; label: string }[] = [
+  { id: "uv", label: "Download uv (Python manager)" },
+  { id: "python", label: "Install Python 3.12" },
+  { id: "node", label: "Install Node.js" },
+  { id: "postgres", label: "Set up PostgreSQL database" },
+  { id: "release", label: "Download NousViz" },
+  { id: "configure", label: "Install dependencies & migrate" },
+  { id: "build", label: "Build the web interface" },
+  { id: "start", label: "Start services" },
+];
+
+function LocalPanel({ onInstancesChanged }: { onInstancesChanged: () => void }) {
+  const [status, setStatus] = useState<LocalStatus | null>(null);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [steps, setSteps] = useState<Record<string, { status: StepStatus; detail?: string }>>({});
+  const [log, setLog] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const logRef = useRef<HTMLPreElement | null>(null);
+
+  const refresh = useCallback(() => {
+    invoke<LocalStatus>("local_status")
+      .then(setStatus)
+      .catch(() => setStatus(null));
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    const timer = setInterval(refresh, 10_000);
+    return () => clearInterval(timer);
+  }, [refresh]);
+
+  useEffect(() => {
+    const unlisteners: Promise<() => void>[] = [
+      listen<{ step: string; status: StepStatus; detail?: string }>(
+        "local-setup-progress",
+        (e) => {
+          setSteps((s) => ({
+            ...s,
+            [e.payload.step]: { status: e.payload.status, detail: e.payload.detail },
+          }));
+        }
+      ),
+      listen<string>("local-setup-log", (e) => {
+        setLog((l) => [...l.slice(-499), e.payload]);
+      }),
+      listen<boolean>("local-setup-done", (e) => {
+        refresh();
+        if (e.payload) onInstancesChanged();
+      }),
+    ];
+    return () => {
+      for (const u of unlisteners) u.then((f) => f());
+    };
+  }, [refresh, onInstancesChanged]);
+
+  useEffect(() => {
+    logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
+  }, [log]);
+
+  async function handleSetup() {
+    setWizardOpen(true);
+    setSteps({});
+    setLog([]);
+    try {
+      await invoke("local_setup");
+    } catch (err) {
+      setLog((l) => [...l, String(err)]);
+    }
+  }
+
+  async function handleStartStop(action: "local_start" | "local_stop") {
+    setBusy(true);
+    try {
+      await invoke(action);
+    } catch (err) {
+      alert(String(err));
+    } finally {
+      setBusy(false);
+      refresh();
+    }
+  }
+
+  if (!status || !status.supported) return null;
+
+  const setupActive = status.setup_running || (wizardOpen && !status.installed);
+
+  return (
+    <section className="card local-panel">
+      {!status.installed && !setupActive && (
+        <div className="local-head">
+          <div>
+            <strong>Run NousViz on this computer</strong>
+            <p className="muted">
+              Downloads everything it needs (Python, Node, PostgreSQL, NousViz) into the
+              Hub&apos;s own folder — nothing else on your system is touched.
+            </p>
+          </div>
+          <button className="primary" onClick={handleSetup}>
+            Set up local NousViz
+          </button>
+        </div>
+      )}
+
+      {(setupActive || (wizardOpen && status.installed)) && (
+        <div className="local-wizard">
+          <strong>Setting up NousViz on this computer</strong>
+          <ul className="steps">
+            {SETUP_STEPS.map((s) => {
+              const st = steps[s.id]?.status ?? "pending";
+              const mark =
+                st === "ok" ? "✓" : st === "running" ? "…" : st === "error" ? "✗" : "○";
+              return (
+                <li key={s.id} className={`step ${st}`}>
+                  <span className="step-mark">{mark}</span>
+                  <span>{s.label}</span>
+                  {steps[s.id]?.detail && (
+                    <span className="muted step-detail">{steps[s.id].detail}</span>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+          <pre className="setup-log" ref={logRef}>
+            {log.join("\n")}
+          </pre>
+          {status.installed && !status.setup_running && (
+            <button onClick={() => setWizardOpen(false)}>Close</button>
+          )}
+        </div>
+      )}
+
+      {status.installed && !setupActive && !wizardOpen && (
+        <div className="local-head">
+          <div>
+            <span className={`dot ${status.running ? "healthy" : "unreachable"}`} />
+            <strong> This computer</strong>
+            {status.version && <span className="badge"> v{status.version}</span>}
+            <span className="muted"> {status.running ? "running" : "stopped"}</span>
+          </div>
+          <div className="instance-actions">
+            {status.running ? (
+              <button disabled={busy} onClick={() => handleStartStop("local_stop")}>
+                Stop
+              </button>
+            ) : (
+              <button className="primary" disabled={busy} onClick={() => handleStartStop("local_start")}>
+                Start
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </section>
+  );
 }
 
 function App() {
@@ -126,6 +294,8 @@ function App() {
           {addOpen ? "Cancel" : "+ Add instance"}
         </button>
       </header>
+
+      <LocalPanel onInstancesChanged={reload} />
 
       {addOpen && (
         <form className="card add-form" onSubmit={handleAdd}>
